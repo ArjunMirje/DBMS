@@ -1,0 +1,23 @@
+        <div class="table-wrap"><table><caption>{{ 'Current 100 readings' if view == 'current' else 'All past readings' }}</caption><thead><tr><th>ID</th><th>Spacecraft</th><th>Sensor</th><th>Value</th><th>Unit</th><th>Time</th><th>State</th></tr></thead><tbody>
+        {% for r in readings %}<tr><td>{{ r.reading_id }}</td><td>{{ r.spacecraft_name }}</td><td>{{ r.sensor_type }}</td><td>{{ r.measured_value }}</td><td>{{ r.unit }}</td><td>{{ r.recorded_at }}</td><td>{{ r.state }}</td></tr>
+        {% else %}<tr><td colspan="7">No readings match these filters.</td></tr>{% endfor %}
+        </tbody></table></div>
+
+    <section id="alerts">
+        <h2>4. Alerts</h2>
+        <div class="table-wrap"><table><caption>Reading alerts</caption><thead><tr><th>Reading ID</th><th>Spacecraft</th><th>Sensor</th><th>Message</th><th>Time</th><th>Status</th></tr></thead><tbody>
+        {% for a in alerts %}<tr><td>{{ a.reading_id }}</td><td>{{ a.spacecraft_name }}</td><td>{{ a.sensor_type }}</td><td>{{ a.message }}</td><td>{{ a.recorded_at }}</td><td>
+            {% if a.acknowledged %}Acknowledged{% else %}
+            <form method="post" action="{{ url_for('acknowledge') }}" data-acknowledge><input type="hidden" name="alert_id" value="{{ a.alert_id }}"><button>Acknowledge</button></form>
+            {% endif %}
+        </td></tr>{% else %}<tr><td colspan="6">No alerts yet.</td></tr>{% endfor %}
+        </tbody></table></div>
+    </section>
+
+    <section id="summary">
+        <h2>5. Summary</h2>
+        <div class="table-wrap"><table><caption>Sensor statistics</caption><thead><tr><th>Spacecraft</th><th>Sensor</th><th>Unit</th><th>Count</th><th>Minimum</th><th>Maximum</th><th>Average</th></tr></thead><tbody>
+        {% for s in summary %}<tr><td>{{ s.spacecraft_name }}</td><td>{{ s.sensor_type }}</td><td>{{ s.unit }}</td><td>{{ s.reading_count }}</td><td>{{ s.minimum if s.minimum is not none else '-' }}</td><td>{{ s.maximum if s.maximum is not none else '-' }}</td><td>{{ s.average if s.average is not none else '-' }}</td></tr>
+        {% else %}<tr><td colspan="7">Satellite-01 has no configured sensors.</td></tr>{% endfor %}
+        </tbody></table></div>
+    </section>

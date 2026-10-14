@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Space Telemetry — Request error</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+    <h1>Request could not be completed</h1>
+    <p role="alert">{{ message }}</p>
+    <p>See README.md for setup and troubleshooting steps.</p>
+    <a href="{{ url_for('index') }}">Return to home</a>
+</main>
+</body>
+</html>

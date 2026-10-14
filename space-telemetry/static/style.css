@@ -1,0 +1,24 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: white; color: #222; font: 16px Arial, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+h1 { font-size: 26px; }
+h2 { font-size: 22px; }
+h3 { font-size: 18px; }
+nav { display: flex; gap: 16px; flex-wrap: wrap; margin: 20px 0; }
+a { color: #174b8b; }
+a[aria-current="page"] { font-weight: bold; }
+section { border-top: 1px solid #aaa; padding: 16px 0; }
+form { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin: 12px 0; }
+label { display: flex; flex-direction: column; gap: 5px; max-width: 100%; }
+input, select, button { font: inherit; padding: 7px; border: 1px solid #888; border-radius: 2px; max-width: 100%; }
+button { background: #eee; color: #222; cursor: pointer; }
+button:hover { background: #ddd; }
+input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid #174b8b; outline-offset: 2px; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+caption { text-align: left; font-weight: bold; padding: 8px 0; }
+th, td { border: 1px solid #bbb; padding: 8px; text-align: left; vertical-align: top; }
+th { background: #f2f2f2; }
+td form { margin: 0; }
+.message { padding: 12px; border: 1px solid #888; background: #f4f4f4; overflow-wrap: anywhere; }
+@media (max-width: 600px) { main { padding: 12px; } h1 { font-size: 22px; } }
