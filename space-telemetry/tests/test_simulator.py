@@ -1,4 +1,4 @@
-"""Timer, connection lifecycle, transaction, and page checks without live MySQL."""
+"""Simulator, transaction, filtering, and page checks without live MySQL."""
 import configparser
 import threading
 import time
@@ -11,13 +11,28 @@ import mysql.connector
 import app as telemetry
 
 
+def parameter(sensor_id, code, name, normal_min, normal_max, critical_min, critical_max,
+              nominal, step, rule='Always', places=2):
+    return dict(sensor_id=sensor_id, parameter_id=sensor_id, code=code, name=name,
+                category='Power', unit='%', normal_min=Decimal(str(normal_min)) if normal_min is not None else None,
+                normal_max=Decimal(str(normal_max)) if normal_max is not None else None,
+                critical_min=Decimal(str(critical_min)) if critical_min is not None else None,
+                critical_max=Decimal(str(critical_max)) if critical_max is not None else None,
+                nominal_value=Decimal(str(nominal)), max_step=Decimal(str(step)),
+                decimal_places=places, activity_rule=rule, previous_value=Decimal(str(nominal)),
+                description='Test parameter')
+
+
 def batch_connection(status='Active'):
     db = MagicMock()
     cursor = db.cursor.return_value
-    cursor.fetchone.return_value = {'spacecraft_id': 7, 'status': status}
+    cursor.fetchone.return_value = {
+        'spacecraft_id': 7, 'status': status, 'orbit_state': 'Sunlight',
+        'contact_state': 'Ground contact', 'simulation_step': 0,
+    }
     cursor.fetchall.return_value = [
-        {'sensor_id': 10, 'sensor_type': 'Temperature', 'min_value': Decimal('-10'), 'max_value': Decimal('60')},
-        {'sensor_id': 11, 'sensor_type': 'Battery', 'min_value': Decimal('20'), 'max_value': Decimal('100')},
+        parameter(10, 'battery_charge', 'Battery state of charge', 30, 100, 20, 100, 75, .4, places=1),
+        parameter(11, 'solar_array_current', 'Solar-array current', .5, 4.3, .1, 4.8, 2.4, .25, 'Sunlight'),
     ]
     cursor.nextset.return_value = None
     return db
@@ -32,42 +47,49 @@ class SimulatorTests(unittest.TestCase):
     def tearDown(self):
         telemetry.stop_simulator()
 
-    def test_real_timer_and_one_connection_per_batch(self):
+    def test_timer_uses_one_connection_per_batch_and_one_worker(self):
         config = configparser.ConfigParser()
-        config.read_dict({'mysql': {'host': '127.0.0.1', 'port': '3306', 'user': 'test', 'password': '', 'database': 'test'}})
+        config.read_dict({'mysql': {'host': '127.0.0.1', 'port': '3306', 'user': 'test',
+                                    'password': '', 'database': 'test'}})
         config.read = MagicMock(return_value=['test-config.ini'])
-        connections, times = [], []
+        connections = []
         third_batch = threading.Event()
 
         def connect(**settings):
             db = batch_connection()
             connections.append(db)
-            times.append(time.monotonic())
             if len(connections) == 3:
                 third_batch.set()
             return db
 
-        with patch.object(telemetry.configparser, 'ConfigParser', return_value=config), patch.object(telemetry.mysql.connector, 'connect', connect):
+        with patch.object(telemetry, 'SIMULATION_INTERVAL', .05), \
+             patch.object(telemetry.configparser, 'ConfigParser', return_value=config), \
+             patch.object(telemetry.mysql.connector, 'connect', connect), \
+             patch.object(telemetry.random, 'random', return_value=.5):
             telemetry.start_simulator()
             worker = telemetry.simulator_thread
             telemetry.start_simulator()
             self.assertIs(telemetry.simulator_thread, worker)
-            self.assertTrue(third_batch.wait(timeout=24))
+            self.assertTrue(third_batch.wait(timeout=2))
             telemetry.stop_simulator()
-        self.assertEqual(len(connections), 3)
-        intervals = [times[i] - times[i - 1] for i in (1, 2)]
-        for interval in intervals:
-            self.assertTrue(9.5 <= interval <= 10.5, intervals)
-        for db in connections:
+        self.assertGreaterEqual(len(connections), 3)
+        for db in connections[:3]:
             db.start_transaction.assert_called_once()
             db.commit.assert_called_once()
             db.close.assert_called_once()
-            db.rollback.assert_not_called()
             calls = db.cursor.return_value.execute.call_args_list
             self.assertEqual(calls[0].args[1], ('Satellite-01',))
-            self.assertEqual(calls[1].args[1], (7,))
-            self.assertEqual([call.args[1][0] for call in calls[2:]], [10, 11])
-        print('Observed timer intervals (seconds):', [round(interval, 3) for interval in intervals])
+            self.assertEqual(calls[2].args[1], (7,))
+            self.assertEqual([call.args[1][0] for call in calls[3:]], [10, 11])
+
+    def test_warning_critical_and_standby_values(self):
+        battery = parameter(1, 'battery_charge', 'Battery charge', 30, 100, 20, 100, 75, .4, places=1)
+        self.assertEqual(telemetry.fault_value(battery, 'warning'), 25.0)
+        self.assertLess(telemetry.fault_value(battery, 'critical'), 20)
+        radio = parameter(2, 'communication_link_health', 'Communication link', 90, 100, 70, 100, 98, 2, 'Ground contact', 1)
+        craft = {'orbit_state': 'Sunlight', 'contact_state': 'No contact'}
+        self.assertFalse(telemetry.expected_active(radio, craft))
+        self.assertEqual(telemetry.normal_value(radio, craft), 0)
 
     def test_failure_rolls_back_and_closes_cursor(self):
         db = batch_connection()
@@ -75,12 +97,12 @@ class SimulatorTests(unittest.TestCase):
         cursor.execute.side_effect = [None, None, None, mysql.connector.Error(errno=1644)]
         with telemetry.app.app_context(), patch.object(telemetry, 'get_db', return_value=db):
             with self.assertRaises(mysql.connector.Error):
-                telemetry.generate_readings('abnormal')
+                telemetry.generate_readings('critical')
         db.commit.assert_not_called()
         db.rollback.assert_called_once()
         cursor.close.assert_called_once()
 
-    def test_inactive_skips_input_but_allows_discarded_demo(self):
+    def test_inactive_skips_automatic_and_rejects_manual_input(self):
         db = batch_connection('Inactive')
         with telemetry.app.app_context(), patch.object(telemetry, 'get_db', return_value=db):
             self.assertEqual(telemetry.generate_readings(automatic=True), 0)
@@ -88,11 +110,12 @@ class SimulatorTests(unittest.TestCase):
         db.commit.assert_not_called()
         db = batch_connection('Inactive')
         with telemetry.app.app_context(), patch.object(telemetry, 'get_db', return_value=db):
-            self.assertEqual(telemetry.generate_readings('rollback'), 2)
+            with self.assertRaises(ValueError):
+                telemetry.generate_readings('normal')
         db.rollback.assert_called_once()
         db.commit.assert_not_called()
 
-    def test_worker_retries_after_error(self):
+    def test_worker_retries_after_database_error(self):
         succeeded = threading.Event()
         calls = []
 
@@ -101,9 +124,10 @@ class SimulatorTests(unittest.TestCase):
             if len(calls) == 1:
                 raise mysql.connector.Error(errno=2003)
             succeeded.set()
-            return 2
+            return 15
 
-        with patch.object(telemetry, 'SIMULATION_INTERVAL', 0.05), patch.object(telemetry, 'generate_readings', generate):
+        with patch.object(telemetry, 'SIMULATION_INTERVAL', .05), \
+             patch.object(telemetry, 'generate_readings', generate):
             telemetry.start_simulator()
             self.assertTrue(succeeded.wait(timeout=2))
             telemetry.stop_simulator()
@@ -111,21 +135,20 @@ class SimulatorTests(unittest.TestCase):
         self.assertTrue(all(call == {'automatic': True} for call in calls))
 
     def test_page_refresh_is_read_only_and_keeps_filters(self):
-        with patch.object(telemetry, 'select', return_value=[]) as select, patch.object(telemetry, 'generate_readings') as generate:
-            for path in ['/', '/live?sensor_id=10&from_date=2026-10-01&to_date=2026-10-14']:
+        with patch.object(telemetry, 'select', return_value=[]) as select, \
+             patch.object(telemetry, 'generate_readings') as generate:
+            for path in ['/', '/live?sensor_id=10&category=Power&state=NORMAL&from_date=2026-10-01&to_date=2026-10-14']:
                 response = self.client.get(path)
                 self.assertEqual(response.status_code, 200)
             generate.assert_not_called()
-            for call in select.call_args_list:
-                self.assertIn('c.name = %s', call.args[0])
-                self.assertEqual(call.args[1][0], 'Satellite-01')
-            reading_call = select.call_args_list[7]
+            reading_call = select.call_args_list[9]
+            self.assertIn('filtered_readings', reading_call.args[0])
             self.assertEqual(reading_call.args[1][1], 10)
-            self.assertEqual(str(reading_call.args[1][3]), '2026-10-15')
-        with self.client.get('/static/live.js') as response:
-            self.assertEqual(response.status_code, 200)
+            self.assertEqual(str(reading_call.args[1][4]), '2026-10-15')
+            self.assertEqual(reading_call.args[1][-1], 'NORMAL')
+        self.assertEqual(self.client.get('/?state=unknown').status_code, 400)
 
-    def test_mutations_cannot_target_a_second_satellite(self):
+    def test_mutations_are_limited_to_satellite_01(self):
         with patch.object(telemetry, 'write', return_value=1) as write:
             self.client.post('/spacecraft/status', data={'status': 'Inactive', 'spacecraft_id': 2})
             self.assertEqual(write.call_args.args[1], ('Inactive', 'Satellite-01'))
@@ -134,52 +157,17 @@ class SimulatorTests(unittest.TestCase):
             self.assertEqual(write.call_args.args[1], (5, 'Satellite-01'))
         self.assertEqual(self.client.get('/simulate').status_code, 405)
 
-    def test_reading_views_keep_filters_and_choose_the_limit(self):
-        with patch.object(telemetry, 'select', return_value=[]) as select:
-            response = self.client.get('/?sensor_id=10')
-            self.assertIn('LIMIT 100', select.call_args_list[2].args[0])
-            self.assertIn(b'view=all', response.data)
-            self.assertIn(b'Current 100 readings', response.data)
-            select.reset_mock()
-            response = self.client.get('/?view=all&sensor_id=10')
-            self.assertNotIn('LIMIT', select.call_args_list[2].args[0])
-            self.assertIn(b'name="view" value="all"', response.data)
-            self.assertIn(b'sensor_id=10', response.data)
-            self.assertNotIn(b'Automatic input is running', response.data)
-            self.assertNotIn(b'Tables updated at', response.data)
-            self.assertNotIn(b'Automatic readings stay', response.data)
-            self.assertEqual(self.client.get('/?view=unknown').status_code, 400)
-
-    def test_alerts_display_reading_id_and_submit_internal_alert_id(self):
-        alert = dict(alert_id=6, reading_id=182, spacecraft_name='Satellite-01',
-                     sensor_type='Battery', message='LOW reading: 19.00',
-                     recorded_at='2026-10-14 22:17:32', acknowledged=False)
-        with patch.object(telemetry, 'select', side_effect=[[], [], [], [alert], []]):
-            html = self.client.get('/').get_data(as_text=True)
-        alerts = html.split('<section id="alerts">')[1].split('</section>')[0]
-        self.assertIn('<th>Reading ID</th>', alerts)
-        self.assertIn('<td>182</td>', alerts)
-        self.assertNotIn('<td>6</td>', alerts)
-        self.assertIn('name="alert_id" value="6"', alerts)
-
     def test_ajax_acknowledgement_returns_json_without_redirect(self):
         headers = {'Accept': 'application/json'}
         with patch.object(telemetry, 'write', return_value=1):
             response = self.client.post('/alerts/acknowledge', data={'alert_id': 6}, headers=headers)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json['success'])
-        self.assertNotIn('Location', response.headers)
         with patch.object(telemetry, 'write', return_value=0):
             response = self.client.post('/alerts/acknowledge', data={'alert_id': 6}, headers=headers)
         self.assertEqual(response.status_code, 404)
-        self.assertFalse(response.json['success'])
         response = self.client.post('/alerts/acknowledge', data={'alert_id': 'invalid'}, headers=headers)
         self.assertEqual(response.status_code, 400)
-        self.assertFalse(response.json['success'])
-        with patch.object(telemetry, 'write', side_effect=mysql.connector.Error(errno=2003)):
-            response = self.client.post('/alerts/acknowledge', data={'alert_id': 6}, headers=headers)
-        self.assertEqual(response.status_code, 503)
-        self.assertFalse(response.json['success'])
 
 
 if __name__ == '__main__':

@@ -1,23 +1,111 @@
-        <div class="table-wrap"><table><caption>{{ 'Current 100 readings' if view == 'current' else 'All past readings' }}</caption><thead><tr><th>ID</th><th>Spacecraft</th><th>Sensor</th><th>Value</th><th>Unit</th><th>Time</th><th>State</th></tr></thead><tbody>
-        {% for r in readings %}<tr><td>{{ r.reading_id }}</td><td>{{ r.spacecraft_name }}</td><td>{{ r.sensor_type }}</td><td>{{ r.measured_value }}</td><td>{{ r.unit }}</td><td>{{ r.recorded_at }}</td><td>{{ r.state }}</td></tr>
-        {% else %}<tr><td colspan="7">No readings match these filters.</td></tr>{% endfor %}
-        </tbody></table></div>
+<section id="overview" class="panel overview-panel">
+    <div class="health-row">
+        <div>
+            <p class="eyebrow">Current health</p>
+            <h2>Telemetry overview</h2>
+        </div>
+        <span class="health-status state-{{ health|lower|replace(' ', '-') }}">{{ health }}</span>
+    </div>
+    <div class="status-counts" aria-label="Current telemetry state counts">
+        <span><strong>{{ state_counts.NORMAL }}</strong> normal</span>
+        <span><strong>{{ state_counts.WARNING }}</strong> warning</span>
+        <span><strong>{{ state_counts.CRITICAL }}</strong> critical</span>
+        <span><strong>{{ state_counts.STANDBY }}</strong> standby</span>
+        <span><strong>{{ open_alert_count }}</strong> open alerts</span>
+    </div>
+    {% for craft in spacecraft %}
+    <div class="context-row">
+        <span>Orbit <strong>{{ craft.orbit_state }}</strong></span>
+        <span>Communication <strong>{{ craft.contact_state }}</strong></span>
+        <span>Input <strong>{{ craft.status }}</strong></span>
+    </div>
+    {% endfor %}
 
-    <section id="alerts">
-        <h2>4. Alerts</h2>
-        <div class="table-wrap"><table><caption>Reading alerts</caption><thead><tr><th>Reading ID</th><th>Spacecraft</th><th>Sensor</th><th>Message</th><th>Time</th><th>Status</th></tr></thead><tbody>
-        {% for a in alerts %}<tr><td>{{ a.reading_id }}</td><td>{{ a.spacecraft_name }}</td><td>{{ a.sensor_type }}</td><td>{{ a.message }}</td><td>{{ a.recorded_at }}</td><td>
-            {% if a.acknowledged %}Acknowledged{% else %}
-            <form method="post" action="{{ url_for('acknowledge') }}" data-acknowledge><input type="hidden" name="alert_id" value="{{ a.alert_id }}"><button>Acknowledge</button></form>
+    {% for category, items in latest|groupby('category') %}
+    <div class="metric-group">
+        <h3>{{ category }}</h3>
+        <div class="metric-grid">
+            {% for item in items %}
+            <article class="metric-card state-border-{{ item.state|lower|replace(' ', '-') }}">
+                <div class="metric-title">
+                    <span>{{ item.sensor_name }}</span>
+                    <span class="badge state-{{ item.state|lower|replace(' ', '-') }}">{{ item.state }}</span>
+                </div>
+                {% if item.reading_id %}
+                <p class="metric-value">{{ item.display_value }}{% if item.unit %} <small>{{ item.unit }}</small>{% endif %}</p>
+                <p class="metric-time">{{ item.recorded_at }}</p>
+                {% else %}
+                <p class="metric-value">—</p><p class="metric-time">Waiting for telemetry</p>
+                {% endif %}
+            </article>
+            {% endfor %}
+        </div>
+    </div>
+    {% else %}
+    <p>No telemetry sensors are configured.</p>
+    {% endfor %}
+</section>
+
+<section class="panel trend-panel" aria-labelledby="trend-heading">
+    <div class="section-heading">
+        <div><p class="eyebrow">Last 30 samples</p><h2 id="trend-heading">{% if trend %}{{ trend[0].sensor_name }} trend{% else %}Telemetry trend{% endif %}</h2></div>
+        {% if trend %}<span class="muted">{{ trend[0].unit }}</span>{% endif %}
+    </div>
+    {% if trend_points %}
+    <svg class="trend-chart" viewBox="0 0 600 150" role="img" aria-label="Recent telemetry line chart" preserveAspectRatio="none">
+        <line x1="8" y1="142" x2="592" y2="142"></line>
+        <polyline points="{{ trend_points }}"></polyline>
+    </svg>
+    {% else %}
+    <p class="muted">Choose a sensor after telemetry has been recorded to see its trend.</p>
+    {% endif %}
+</section>
+
+<section id="readings" class="panel">
+    <div class="section-heading">
+        <div><p class="eyebrow">Telemetry log</p><h2>{{ 'Latest 100 readings' if view == 'current' else 'All readings' }}</h2></div>
+    </div>
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>Sensor</th><th>Category</th><th>Value</th><th>Recorded</th><th>State</th></tr></thead>
+        <tbody>
+        {% for reading in readings %}
+        <tr><td>{{ reading.reading_id }}</td><td>{{ reading.sensor_name }}</td><td>{{ reading.category }}</td><td>{{ reading.display_value }}{% if reading.unit %} {{ reading.unit }}{% endif %}</td><td>{{ reading.recorded_at }}</td><td><span class="badge state-{{ reading.state|lower }}">{{ reading.state }}</span></td></tr>
+        {% else %}<tr><td colspan="6">No readings match these filters.</td></tr>{% endfor %}
+        </tbody>
+    </table></div>
+</section>
+
+<section id="alerts" class="panel">
+    <div class="section-heading">
+        <div><p class="eyebrow">Exceptions</p><h2>Warnings and emergencies</h2></div>
+        <span class="muted">{{ open_alert_count }} open</span>
+    </div>
+    <div class="table-wrap"><table>
+        <thead><tr><th>Reading</th><th>Severity</th><th>Sensor</th><th>Message</th><th>Recorded</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for alert in alerts %}
+        <tr><td>{{ alert.reading_id }}</td><td><span class="badge state-{{ alert.severity|lower }}">{{ alert.severity }}</span></td><td>{{ alert.sensor_name }}</td><td>{{ alert.message }}</td><td>{{ alert.recorded_at }}</td><td>
+            {% if alert.acknowledged %}<span class="muted">Acknowledged</span>{% else %}
+            <form method="post" action="{{ url_for('acknowledge') }}" data-acknowledge>
+                <input type="hidden" name="alert_id" value="{{ alert.alert_id }}"><button class="small-button">Acknowledge</button>
+            </form>
             {% endif %}
-        </td></tr>{% else %}<tr><td colspan="6">No alerts yet.</td></tr>{% endfor %}
-        </tbody></table></div>
-    </section>
+        </td></tr>
+        {% else %}<tr><td colspan="6">No warning or critical alerts yet.</td></tr>{% endfor %}
+        </tbody>
+    </table></div>
+</section>
 
-    <section id="summary">
-        <h2>5. Summary</h2>
-        <div class="table-wrap"><table><caption>Sensor statistics</caption><thead><tr><th>Spacecraft</th><th>Sensor</th><th>Unit</th><th>Count</th><th>Minimum</th><th>Maximum</th><th>Average</th></tr></thead><tbody>
-        {% for s in summary %}<tr><td>{{ s.spacecraft_name }}</td><td>{{ s.sensor_type }}</td><td>{{ s.unit }}</td><td>{{ s.reading_count }}</td><td>{{ s.minimum if s.minimum is not none else '-' }}</td><td>{{ s.maximum if s.maximum is not none else '-' }}</td><td>{{ s.average if s.average is not none else '-' }}</td></tr>
-        {% else %}<tr><td colspan="7">Satellite-01 has no configured sensors.</td></tr>{% endfor %}
-        </tbody></table></div>
-    </section>
+<section id="summary" class="panel">
+    <details>
+        <summary>Sensor statistics</summary>
+        <div class="table-wrap"><table>
+            <thead><tr><th>Sensor</th><th>Category</th><th>Count</th><th>Minimum</th><th>Maximum</th><th>Average</th></tr></thead>
+            <tbody>
+            {% for item in summary %}
+            <tr><td>{{ item.sensor_name }}</td><td>{{ item.category }}</td><td>{{ item.reading_count }}</td><td>{{ item.minimum if item.minimum is not none else '—' }} {{ item.unit }}</td><td>{{ item.maximum if item.maximum is not none else '—' }} {{ item.unit }}</td><td>{{ item.average if item.average is not none else '—' }} {{ item.unit }}</td></tr>
+            {% else %}<tr><td colspan="6">No statistics are available.</td></tr>{% endfor %}
+            </tbody>
+        </table></div>
+    </details>
+</section>

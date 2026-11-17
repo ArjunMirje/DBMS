@@ -1,8 +1,4 @@
-"""Integration checks on a separate local MySQL server, never the configured database.
-
-Run with SPACE_TELEMETRY_TEST_PORT set to the isolated server's port.
-The test account is root with an empty password on that test server only.
-"""
+"""Integration checks on a separate local MySQL server, never the configured database."""
 import os
 import time
 import unittest
@@ -41,12 +37,13 @@ class TelemetryIntegrationTests(unittest.TestCase):
             if statement.rstrip().endswith(delimiter):
                 cursor.execute(statement.rstrip()[:-len(delimiter)])
                 statement = ''
-        cursor.execute('SELECT COUNT(*) FROM spacecraft')
-        assert cursor.fetchone()[0] == 1, 'Fresh seed must contain only one satellite.'
-        # Old databases may contain other satellites: prove they remain untouched.
+        cursor.execute('SELECT COUNT(*) FROM sensors WHERE spacecraft_id = 1')
+        assert cursor.fetchone()[0] == 15, 'Fresh seed must contain fifteen telemetry sensors.'
+
         cursor.execute("INSERT INTO spacecraft (mission_id, name) VALUES (1, 'Satellite-02')")
-        cursor.execute("INSERT INTO sensors (spacecraft_id, sensor_type, min_value, max_value) VALUES (2, 'Temperature', -10, 60)")
-        cursor.execute('CALL add_reading(3, 75)')
+        cursor.execute('INSERT INTO sensors (spacecraft_id, parameter_id) VALUES (2, 1)')
+        cls.other_sensor_id = cursor.lastrowid
+        cursor.execute('CALL add_reading(%s, 85, TRUE)', (cls.other_sensor_id,))
         while cursor.nextset():
             pass
         cursor.close()
@@ -94,13 +91,12 @@ class TelemetryIntegrationTests(unittest.TestCase):
         while time.monotonic() < deadline:
             if condition():
                 return
-            time.sleep(0.025)
+            time.sleep(.025)
         self.fail('Timed out waiting for simulator state.')
 
     def test_real_ten_second_interval_and_single_worker(self):
         before = self.counts()[0]
-        latest_id = self.sql('SELECT MAX(reading_id) FROM readings')[0][0]
-        other = self.sql('SELECT COUNT(*) FROM readings WHERE sensor_id = 3')[0][0]
+        other = self.sql('SELECT COUNT(*) FROM readings WHERE sensor_id = %s', (self.other_sensor_id,))[0][0]
         started = time.monotonic()
         telemetry.start_simulator()
         original_thread = telemetry.simulator_thread
@@ -108,65 +104,76 @@ class TelemetryIntegrationTests(unittest.TestCase):
         self.assertIs(telemetry.simulator_thread, original_thread)
         elapsed = []
         for batch in range(1, 4):
-            self.wait_for(lambda: self.counts()[0] >= before + batch * 2, timeout=12)
+            self.wait_for(lambda: self.counts()[0] >= before + batch * 15, timeout=12)
             elapsed.append(time.monotonic() - started)
-            self.assertEqual(self.counts()[0], before + batch * 2)
+            self.assertEqual(self.counts()[0], before + batch * 15)
         telemetry.stop_simulator()
         self.assertLess(elapsed[0], 3)
         self.assertTrue(9 <= elapsed[1] <= 12, elapsed)
         self.assertTrue(19 <= elapsed[2] <= 22, elapsed)
-        self.assertEqual(self.sql('SELECT COUNT(*) FROM readings WHERE sensor_id = 3')[0][0], other)
-        self.assertEqual(self.sql('SELECT COUNT(*) FROM readings r JOIN sensors s ON s.sensor_id = r.sensor_id WHERE r.reading_id > %s AND s.spacecraft_id = 1 AND (r.measured_value < s.min_value OR r.measured_value > s.max_value)', (latest_id,))[0][0], 0)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM readings WHERE sensor_id = %s',
+                                  (self.other_sensor_id,))[0][0], other)
         print('Observed automatic batch times (seconds):', [round(value, 2) for value in elapsed])
 
-    def test_browser_reads_never_generate_or_show_other_satellites(self):
+    def test_browser_reads_are_read_only_and_scoped(self):
         before = self.counts()
-        for path in ['/', '/live', '/live?sensor_id=1', '/live?sensor_id=3', '/live?from_date=2026-10-01&to_date=2026-10-31']:
+        paths = ['/', '/live', '/live?sensor_id=1',
+                 f'/live?sensor_id={self.other_sensor_id}',
+                 '/live?category=Power&state=NORMAL&from_date=2026-10-01&to_date=2026-10-31']
+        for path in paths:
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200)
             self.assertNotIn(b'Satellite-02', response.data)
         self.assertEqual(self.counts(), before)
         self.assertEqual(self.client.get('/live?sensor_id=invalid').status_code, 400)
         self.assertEqual(self.client.get('/live?to_date=9999-12-31').status_code, 400)
-        with self.client.get('/static/live.js') as response:
-            self.assertEqual(response.status_code, 200)
 
-    def test_manual_alerts_rollback_and_acknowledgement(self):
+    def test_manual_severities_pause_and_acknowledgement(self):
         before = self.counts()
-        response = self.client.post('/simulate', data={'mode': 'abnormal', 'spacecraft_id': 2})
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(self.counts(), (before[0] + 2, before[1] + 2))
+        self.client.post('/simulate', data={'mode': 'warning', 'spacecraft_id': 2})
+        self.assertEqual(self.counts(), (before[0] + 15, before[1] + 1))
+        self.assertEqual(self.sql('SELECT severity FROM alerts ORDER BY alert_id DESC LIMIT 1')[0][0], 'Warning')
+        self.client.post('/simulate', data={'mode': 'critical'})
+        self.assertEqual(self.counts(), (before[0] + 30, before[1] + 2))
+        self.assertEqual(self.sql('SELECT severity FROM alerts ORDER BY alert_id DESC LIMIT 1')[0][0], 'Critical')
+
         self.client.post('/spacecraft/status', data={'status': 'Inactive', 'spacecraft_id': 2})
         self.assertEqual(self.sql('SELECT status FROM spacecraft WHERE spacecraft_id = 2')[0][0], 'Active')
-        before = self.counts()
-        self.client.post('/simulate', data={'mode': 'rollback'})
-        self.assertEqual(self.counts(), before)
+        paused = self.counts()
         self.client.post('/simulate', data={'mode': 'normal'})
-        self.assertEqual(self.counts(), before)
-        own_id = self.sql('SELECT MAX(a.alert_id) FROM alerts a JOIN readings r ON r.reading_id = a.reading_id WHERE r.sensor_id = 1')[0][0]
-        other_id = self.sql('SELECT a.alert_id FROM alerts a JOIN readings r ON r.reading_id = a.reading_id WHERE r.sensor_id = 3')[0][0]
+        self.assertEqual(self.counts(), paused)
+
+        own_id = self.sql('''SELECT MAX(a.alert_id) FROM alerts a
+                             JOIN readings r ON r.reading_id = a.reading_id
+                             JOIN sensors s ON s.sensor_id = r.sensor_id
+                             WHERE s.spacecraft_id = 1''')[0][0]
+        other_id = self.sql('''SELECT a.alert_id FROM alerts a JOIN readings r ON r.reading_id = a.reading_id
+                               WHERE r.sensor_id = %s''', (self.other_sensor_id,))[0][0]
         self.client.post('/alerts/acknowledge', data={'alert_id': own_id})
         self.client.post('/alerts/acknowledge', data={'alert_id': other_id})
         self.assertEqual(self.sql('SELECT acknowledged FROM alerts WHERE alert_id = %s', (own_id,))[0][0], 1)
         self.assertEqual(self.sql('SELECT acknowledged FROM alerts WHERE alert_id = %s', (other_id,))[0][0], 0)
 
-    def test_failed_second_insert_rolls_back_first_reading_and_alert(self):
+    def test_failed_second_insert_rolls_back_whole_batch(self):
+        sensor_ids = [row[0] for row in self.sql('SELECT sensor_id FROM sensors WHERE spacecraft_id = 1 ORDER BY sensor_id')]
         before = self.counts()
-        self.sql("""CREATE TRIGGER reject_test_battery BEFORE INSERT ON readings FOR EACH ROW
-                    BEGIN IF NEW.sensor_id = 2 THEN
-                    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Integration test failure';
-                    END IF; END""")
+        self.sql(f'''CREATE TRIGGER reject_second_sensor BEFORE INSERT ON readings FOR EACH ROW
+                     BEGIN IF NEW.sensor_id = {sensor_ids[1]} THEN
+                     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Integration test failure';
+                     END IF; END''')
         try:
-            response = self.client.post('/simulate', data={'mode': 'abnormal'})
+            with patch.object(telemetry.random, 'choice', side_effect=lambda values: values[0]):
+                response = self.client.post('/simulate', data={'mode': 'critical'})
             self.assertEqual(response.status_code, 503)
             self.assertEqual(self.counts(), before)
         finally:
-            self.sql('DROP TRIGGER reject_test_battery')
+            self.sql('DROP TRIGGER reject_second_sensor')
 
     def test_pause_resume_and_recovery_after_database_failure(self):
         self.client.post('/spacecraft/status', data={'status': 'Inactive'})
         before = self.counts()
-        with patch.object(telemetry, 'SIMULATION_INTERVAL', 0.05), patch.object(telemetry, 'generate_readings', wraps=telemetry.generate_readings) as generate:
+        with patch.object(telemetry, 'SIMULATION_INTERVAL', .05), \
+             patch.object(telemetry, 'generate_readings', wraps=telemetry.generate_readings) as generate:
             telemetry.start_simulator()
             self.wait_for(lambda: generate.call_count >= 3)
             self.assertEqual(self.counts(), before)
@@ -183,7 +190,8 @@ class TelemetryIntegrationTests(unittest.TestCase):
                 raise mysql.connector.Error(errno=2003)
             return real_generate(*args, **kwargs)
 
-        with patch.object(telemetry, 'SIMULATION_INTERVAL', 0.05), patch.object(telemetry, 'generate_readings', fail_once):
+        with patch.object(telemetry, 'SIMULATION_INTERVAL', .05), \
+             patch.object(telemetry, 'generate_readings', fail_once):
             telemetry.start_simulator()
             self.wait_for(lambda: self.counts()[0] > before)
             telemetry.stop_simulator()

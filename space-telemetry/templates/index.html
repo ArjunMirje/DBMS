@@ -3,60 +3,110 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Space Telemetry DBMS</title>
+    <title>Satellite-01 Mission Control</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='live.js') }}" defer></script>
 </head>
 <body>
+<header class="site-header">
+    <div>
+        <p class="eyebrow">6U Earth observation demo</p>
+        <h1>Satellite-01 Mission Control</h1>
+    </div>
+    <nav aria-label="Dashboard sections">
+        <a href="#overview">Overview</a>
+        <a href="#readings">Readings</a>
+        <a href="#alerts">Alerts</a>
+        <a href="#summary">Summary</a>
+    </nav>
+</header>
+
 <main>
-    <h1>Space Telemetry Database Management System</h1>
-    <nav><a href="#setup">Satellite</a> <a href="#simulator">Simulator</a> <a href="#readings">Readings</a> <a href="#alerts">Alerts</a> <a href="#summary">Summary</a></nav>
     {% for message in get_flashed_messages() %}
     <p class="message" role="status">{{ message }}</p>
     {% endfor %}
 
-    <section id="setup">
-        <h2>1. Satellite</h2>
-        <div class="table-wrap"><table><caption>Monitored satellite</caption><thead><tr><th>Name</th><th>Mission</th><th>Status</th><th>Change status</th></tr></thead><tbody>
-        {% for c in spacecraft %}
-            <tr><td>{{ c.name }}</td><td>{{ c.mission_name }}</td><td>{{ c.status }}</td><td>
-                <form method="post" action="{{ url_for('change_status') }}">
-                    <select name="status" aria-label="Status for {{ c.name }}"><option {% if c.status == 'Active' %}selected{% endif %}>Active</option><option {% if c.status == 'Inactive' %}selected{% endif %}>Inactive</option></select>
-                    <button>Save</button>
-                </form>
-            </td></tr>
-        {% else %}<tr><td colspan="4">Satellite-01 is missing. Check the schema sample data.</td></tr>{% endfor %}
-        </tbody></table></div>
-        <div class="table-wrap"><table><caption>Satellite sensors</caption><thead><tr><th>ID</th><th>Sensor</th><th>Unit</th><th>Minimum</th><th>Maximum</th></tr></thead><tbody>
-        {% for s in sensors %}<tr><td>{{ s.sensor_id }}</td><td>{{ s.sensor_type }}</td><td>{{ s.unit }}</td><td>{{ s.min_value }}</td><td>{{ s.max_value }}</td></tr>
-        {% else %}<tr><td colspan="5">Satellite-01 has no sensors. Check the schema sample data.</td></tr>{% endfor %}
-        </tbody></table></div>
-    </section>
+    <div class="control-grid">
+        <section class="panel" aria-labelledby="satellite-heading">
+            <div class="section-heading">
+                <div><p class="eyebrow">Spacecraft</p><h2 id="satellite-heading">Mission state</h2></div>
+            </div>
+            {% for craft in spacecraft %}
+            <dl class="facts">
+                <div><dt>Mission</dt><dd>{{ craft.mission_name }}</dd></div>
+                <div><dt>Satellite</dt><dd>{{ craft.name }}</dd></div>
+                <div><dt>Sensors</dt><dd>{{ sensors|length }}</dd></div>
+            </dl>
+            <form method="post" action="{{ url_for('change_status') }}" class="compact-form">
+                <label>Telemetry input
+                    <select name="status">
+                        <option {% if craft.status == 'Active' %}selected{% endif %}>Active</option>
+                        <option {% if craft.status == 'Inactive' %}selected{% endif %}>Inactive</option>
+                    </select>
+                </label>
+                <button>Save</button>
+            </form>
+            {% else %}
+            <p>Satellite-01 is missing. Run the database schema.</p>
+            {% endfor %}
+        </section>
 
-    <section id="simulator">
-        <h2>2. Simulator</h2>
-        <form method="post" action="{{ url_for('simulate') }}">
-            <label>Manual demonstration <select name="mode"><option value="normal">Normal readings</option><option value="abnormal">Abnormal readings</option><option value="rollback">Rollback demonstration</option></select></label>
-            <button>Generate once</button>
-        </form>
-    </section>
+        <section class="panel" aria-labelledby="simulator-heading">
+            <div class="section-heading">
+                <div><p class="eyebrow">Demonstration</p><h2 id="simulator-heading">Telemetry simulator</h2></div>
+            </div>
+            <p class="muted">Automatic telemetry arrives every {{ interval }} seconds. Manual runs add one complete 15-sensor batch.</p>
+            <form method="post" action="{{ url_for('simulate') }}" class="compact-form">
+                <label>Batch type
+                    <select name="mode">
+                        <option value="normal">Normal telemetry</option>
+                        <option value="warning">One warning</option>
+                        <option value="critical">One critical emergency</option>
+                    </select>
+                </label>
+                <button>Generate batch</button>
+            </form>
+        </section>
+    </div>
 
-    <section id="readings">
-        <h2>3. Readings</h2>
-        <nav aria-label="Reading views">
-            <a href="{{ current_url }}#readings" {% if view == 'current' %}aria-current="page"{% endif %}>Current 100 readings</a>
-            <a href="{{ all_url }}#readings" {% if view == 'all' %}aria-current="page"{% endif %}>All past readings</a>
-        </nav>
+    <section class="panel filters" aria-labelledby="filters-heading">
+        <div class="section-heading">
+            <div><p class="eyebrow">History</p><h2 id="filters-heading">Filter readings</h2></div>
+            <nav class="view-links" aria-label="Reading views">
+                <a href="{{ current_url }}#readings" {% if view == 'current' %}aria-current="page"{% endif %}>Latest 100</a>
+                <a href="{{ all_url }}#readings" {% if view == 'all' %}aria-current="page"{% endif %}>All readings</a>
+            </nav>
+        </div>
         <form method="get" action="{{ url_for('index') }}#readings">
             <input type="hidden" name="view" value="{{ view }}">
-            <label>Sensor <select name="sensor_id"><option value="">All</option>{% for s in sensors %}<option value="{{ s.sensor_id }}" {% if request.args.get('sensor_id') == s.sensor_id|string %}selected{% endif %}>{{ s.sensor_type }}</option>{% endfor %}</select></label>
+            <label>Sensor
+                <select name="sensor_id">
+                    <option value="">All sensors</option>
+                    {% for sensor in sensors %}
+                    <option value="{{ sensor.sensor_id }}" {% if request.args.get('sensor_id') == sensor.sensor_id|string %}selected{% endif %}>{{ sensor.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Category
+                <select name="category">
+                    <option value="">All categories</option>
+                    {% for category in categories %}<option {% if request.args.get('category') == category %}selected{% endif %}>{{ category }}</option>{% endfor %}
+                </select>
+            </label>
+            <label>State
+                <select name="state">
+                    <option value="">All states</option>
+                    {% for state in states %}<option {% if request.args.get('state') == state %}selected{% endif %}>{{ state }}</option>{% endfor %}
+                </select>
+            </label>
             <label>From <input type="date" name="from_date" value="{{ request.args.get('from_date', '') }}"></label>
             <label>To <input type="date" name="to_date" value="{{ request.args.get('to_date', '') }}"></label>
-            <button>Filter</button><a href="{{ url_for('index', view=view) }}#readings">Clear</a>
+            <button>Apply</button>
+            <a class="button-link" href="{{ url_for('index', view=view) }}#readings">Clear</a>
         </form>
     </section>
 
-    <p id="error-message" class="message" role="alert" hidden></p>
+    <p id="error-message" class="message error" role="alert" hidden></p>
     <div id="live-data" data-url="{{ url_for('live') }}" data-interval="{{ interval }}">
         {% include '_telemetry.html' %}
     </div>

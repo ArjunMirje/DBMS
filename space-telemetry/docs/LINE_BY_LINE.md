@@ -1,5 +1,7 @@
 # Line by line code explanation
 
+> This file documents the original two-sensor version and is retained as an archive. The current 15-parameter design is explained in `DATABASE_DESIGN.md` and `TELEMETRY_LIMITS.md`. Line numbers and field names below no longer match the upgraded source.
+
 Updated for the two reading views, reading IDs in alerts, and acknowledgement without page reload. Line numbers match the current application source.
 
 Python generates readings for Satellite-01 immediately at startup and every ten seconds. Each tick gets its own Flask context and MySQL connection. The stored procedure inserts each reading; the trigger inserts any alert. A batch commits together or rolls back together.

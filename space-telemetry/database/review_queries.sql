@@ -1,46 +1,44 @@
 USE space_telemetry;
 
+-- Basic string and date functions.
 SELECT UPPER(name) AS mission_name, YEAR(start_date) AS start_year FROM missions;
-SELECT reading_id, ROUND(measured_value, 1) AS rounded_value, DATE(recorded_at) AS reading_date
-FROM readings WHERE measured_value > 50 ORDER BY recorded_at DESC;
 
-SELECT c.name, r.measured_value
-FROM spacecraft c JOIN sensors s ON c.spacecraft_id = s.spacecraft_id
-JOIN readings r ON s.sensor_id = r.sensor_id
-WHERE s.sensor_type = 'Battery';
+-- Join the normalized telemetry definitions to their readings.
+SELECT r.reading_id, p.name, r.measured_value, p.unit, DATE(r.recorded_at) AS reading_date
+FROM readings r
+JOIN sensors s ON s.sensor_id = r.sensor_id
+JOIN telemetry_parameters p ON p.parameter_id = s.parameter_id
+ORDER BY r.recorded_at DESC;
 
-SELECT sensor_id, COUNT(*) AS total, AVG(measured_value) AS average
-FROM readings GROUP BY sensor_id HAVING COUNT(*) >= 2;
+-- Aggregate readings by telemetry parameter.
+SELECT p.category, p.name, COUNT(*) AS total, ROUND(AVG(r.measured_value), 2) AS average
+FROM readings r
+JOIN sensors s ON s.sensor_id = r.sensor_id
+JOIN telemetry_parameters p ON p.parameter_id = s.parameter_id
+GROUP BY p.parameter_id, p.category, p.name
+HAVING COUNT(*) >= 2;
 
-SELECT sensor_id, sensor_type FROM sensors
-WHERE sensor_id IN (
-    SELECT r.sensor_id FROM readings r JOIN alerts a ON a.reading_id = r.reading_id
+-- Nested query for parameters that have produced an alert.
+SELECT p.parameter_id, p.name
+FROM telemetry_parameters p
+WHERE p.parameter_id IN (
+    SELECT s.parameter_id
+    FROM sensors s JOIN readings r ON r.sensor_id = s.sensor_id
+    JOIN alerts a ON a.reading_id = r.reading_id
 );
 
-SELECT c.name FROM spacecraft c JOIN sensors s ON c.spacecraft_id = s.spacecraft_id
-WHERE s.sensor_type = 'Temperature'
+-- Set operation across power and thermal parameters.
+SELECT name FROM telemetry_parameters WHERE category = 'Power'
 UNION
-SELECT c.name FROM spacecraft c JOIN sensors s ON c.spacecraft_id = s.spacecraft_id
-WHERE s.sensor_type = 'Battery';
+SELECT name FROM telemetry_parameters WHERE category = 'Thermal';
 
-SELECT classify_reading(20, 20, 100) AS boundary_state;
+-- Function boundary examples.
+SELECT classify_reading(35, 10, 60, -10, 80, TRUE) AS normal_state;
+SELECT classify_reading(70, 10, 60, -10, 80, TRUE) AS warning_state;
+SELECT classify_reading(90, 10, 60, -10, 80, TRUE) AS critical_state;
+SELECT classify_reading(0, 0.5, 4.3, 0.1, 4.8, FALSE) AS standby_state;
 
-SELECT COUNT(*) AS before_readings FROM readings;
-SELECT COUNT(*) AS before_alerts FROM alerts;
-START TRANSACTION;
-CALL add_reading(1, 75);
-SELECT COUNT(*) AS during_readings FROM readings;
-SELECT COUNT(*) AS during_alerts FROM alerts;
-ROLLBACK;
-SELECT COUNT(*) AS after_readings FROM readings;
-SELECT COUNT(*) AS after_alerts FROM alerts;
-
-START TRANSACTION;
-INSERT INTO missions (name, purpose, start_date)
-VALUES ('Temporary DELETE demo', 'Review only', CURRENT_DATE());
-DELETE FROM missions WHERE mission_id = LAST_INSERT_ID();
-ROLLBACK;
-
+-- Index and query-plan demonstration.
 SHOW INDEX FROM readings;
 EXPLAIN SELECT * FROM readings
 WHERE sensor_id = 1 AND recorded_at >= '2026-10-01 00:00:00';
